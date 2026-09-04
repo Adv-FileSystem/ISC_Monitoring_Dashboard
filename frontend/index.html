@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FPGA Monitor</title>
+<script>
+  /* Stamp the resolved theme before first paint so the page never flashes the
+     wrong palette. The toggle below is the only thing that writes the pref. */
+  (function () {
+    let pref = 'auto';
+    try { pref = localStorage.getItem('fpga-dashboard-theme') || 'auto'; } catch (e) {}
+    const dark = pref === 'dark' ||
+      (pref !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  })();
+</script>
+<style>
+  /* Light is the base palette; [data-theme="dark"] overrides it. Every color
+     the page draws — CSS or canvas — comes from these tokens, so a theme flip
+     is a single attribute change. */
+  :root {
+    --bg: #f6f8fa;
+    --panel: #ffffff;
+    --panel-2: #f0f3f6;
+    --border: #d1d9e0;
+    --text: #1f2328;
+    --text-secondary: #59636e;
+    --muted: #6a737d;
+    --grid: #e4e9ef;
+    --track: #e4e9ef;
+    --good: #1a7f37;
+    --warn: #9a6700;
+    --bad: #cf222e;
+    /* fixed categorical order — identity, never reassigned by rank */
+    --series-1: #0969da;
+    --series-2: #0e7490;
+    --series-3: #b26b00;
+    --series-4: #15803d;
+    --series-5: #6b4fd8;
+
+    --tooltip-bg: #ffffff;
+    --tooltip-shadow: 0 8px 20px rgba(31,35,40,.18);
+    --scene-inner: #eaeef3;
+    --board-shadow: .22;
+    --glow-opacity: .5;   /* a tinted glow needs more weight on a light scene */
+    --pill-bg: rgba(255,255,255,.92);
+    --pill-border: rgba(31,35,40,.18);
+    --pill-shadow: 0 6px 18px rgba(31,35,40,.25);
+    --stem-grad: linear-gradient(rgba(31,35,40,.55), rgba(31,35,40,.10));
+
+    --alert-caution-bg: #fff8c5;
+    --alert-caution-border: #d4a72c;
+    --alert-warning-bg: #fff1cc;
+    --alert-warning-border: #bf8700;
+    --alert-warn-text: #7d4e00;
+    --alert-danger-bg: #ffebe9;
+    --alert-danger-border: #ff8182;
+    --alert-danger-text: #a40e26;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c222b;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-secondary: #9198a1;
+    --muted: #8b949e;
+    --grid: #262c34;
+    --track: #21262d;
+    --good: #0ca30c;
+    --warn: #fab219;
+    --bad: #d03b3b;
+    --series-1: #3987e5;
+    --series-2: #199e70;
+    --series-3: #c98500;
+    --series-4: #008300;
+    --series-5: #9085e9;
+
+    --tooltip-bg: #0d1117;
+    --tooltip-shadow: 0 8px 20px rgba(0,0,0,.5);
+    --scene-inner: #1b2129;
+    --board-shadow: .45;
+    --glow-opacity: .38;
+    --pill-bg: rgba(13,17,23,.86);
+    --pill-border: rgba(255,255,255,.14);
+    --pill-shadow: 0 6px 18px rgba(0,0,0,.55);
+    --stem-grad: linear-gradient(rgba(255,255,255,.55), rgba(255,255,255,.12));
+
+    --alert-caution-bg: #241d09;
+    --alert-caution-border: #6b5413;
+    --alert-warning-bg: #2b210a;
+    --alert-warning-border: #8a6410;
+    --alert-warn-text: var(--warn);
+    --alert-danger-bg: #2b1212;
+    --alert-danger-border: #8b2c2c;
+    --alert-danger-text: #f2837f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 5px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .theme-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--panel); color: var(--text-secondary);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 6px 13px; font: inherit; font-size: 12px; line-height: 1;
+    cursor: pointer; flex: none;
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
+  }
+  .theme-toggle:hover { background: var(--panel-2); color: var(--text); }
+  .theme-toggle .tt-ico { font-size: 13px; }
+  .status-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-right: 7px; vertical-align: 1px; background: var(--muted);
+  }
+  .status-dot.up { background: var(--good); }
+  .status-dot.down { background: var(--bad); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .card .value { font-size: 30px; font-weight: 600; margin-top: 6px; }
+  .card .value .unit { font-size: 14px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+  .bar-bg { background: var(--track); border-radius: 5px; height: 5px; margin-top: 11px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 5px; transition: width .4s ease, background .4s ease; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  td:not(:first-child) { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  th { color: var(--muted); font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  .panel-title { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+
+  canvas { width: 100%; height: 200px; display: block; cursor: crosshair; }
+  .chart-wrap { position: relative; }
+  .chart-tooltip {
+    position: absolute; top: 8px; pointer-events: none;
+    background: var(--tooltip-bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 7px 10px; font-size: 12px; line-height: 1.6;
+    box-shadow: var(--tooltip-shadow);
+    opacity: 0; transform: translate(-50%, 0); transition: opacity .1s;
+    white-space: nowrap; z-index: 5;
+  }
+  .chart-tooltip.visible { opacity: 1; }
+  .chart-tooltip .tip-time { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
+  .chart-tooltip .tip-row { display: flex; align-items: center; gap: 6px; }
+  .chart-tooltip .tip-row strong { font-variant-numeric: tabular-nums; color: var(--text); }
+  .chart-tooltip .tip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .chart-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-secondary); margin-bottom: 10px; }
+  .chart-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .chart-legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } }
+
+  /* ================= 3D Alveo U50 ================= */
+  .board-scene {
+    height: 400px;
+    perspective: 1400px;
+    perspective-origin: 50% 45%;
+    display: flex; align-items: center; justify-content: center;
+    user-select: none; overflow: hidden;
+    background: radial-gradient(ellipse 70% 60% at 50% 55%, var(--scene-inner) 0%, var(--panel) 70%);
+    border-radius: 8px;
+  }
+  .board-rig {
+    position: relative;
+    width: 470px; height: 195px;
+    transform-style: preserve-3d;
+    cursor: grab;
+    will-change: transform;
+  }
+  .board-rig.dragging { cursor: grabbing; }
+  .board-rig * { transform-style: preserve-3d; }
+  .f3d { position: absolute; backface-visibility: visible; }
+  .box3d { position: absolute; }
+
+  /* contact shadow on the "table" under the card */
+  .board-shadow {
+    position: absolute; left: 4%; top: 8%; width: 92%; height: 84%;
+    background: #000; opacity: var(--board-shadow); filter: blur(22px); border-radius: 50%;
+    transform: translateZ(-26px);
+  }
+
+  /* thermal markers */
+  .tmark { position: absolute; width: 0; height: 0; }
+  .tmark-glow {
+    position: absolute; width: 96px; height: 96px; left: -48px; top: -48px;
+    border-radius: 50%; opacity: var(--glow-opacity); pointer-events: none;
+    transition: background .6s ease;
+  }
+  .tmark-pill {
+    position: absolute; left: 0; top: 0;
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 9px 4px 7px; border-radius: 999px;
+    background: var(--pill-bg);
+    border: 1px solid var(--pill-border);
+    box-shadow: var(--pill-shadow);
+    white-space: nowrap; margin-left: -50%;
+    backdrop-filter: blur(3px);
+  }
+  .tmark-pill .tm-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none;
+    transition: background .6s ease, box-shadow .6s ease;
+  }
+  .tmark-pill .tm-name { font-size: 10px; color: var(--text-secondary); }
+  .tmark-pill .tm-val {
+    font-size: 12px; font-weight: 650; color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .tmark-stem {
+    position: absolute; width: 1px; left: 0; top: 0;
+    background: var(--stem-grad);
+  }
+
+  .board-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 12px; font-size: 11.5px; color: var(--muted);
+  }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  /* ---- thermal alert banner ---- */
+  #alert-banner {
+    display: none;
+    align-items: flex-start;
+    gap: 11px;
+    border: 1px solid;
+    border-radius: 10px;
+    padding: 13px 15px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  #alert-banner.show { display: flex; }
+  #alert-banner .ico { font-size: 15px; line-height: 1.35; }
+  #alert-banner .msg { font-weight: 600; }
+  #alert-banner .detail { color: var(--text-secondary); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  #alert-banner.caution  { border-color: var(--alert-caution-border); background: var(--alert-caution-bg); color: var(--alert-warn-text); }
+  #alert-banner.warning  { border-color: var(--alert-warning-border); background: var(--alert-warning-bg); color: var(--alert-warn-text); }
+  #alert-banner.critical,
+  #alert-banner.fatal    { border-color: var(--alert-danger-border); background: var(--alert-danger-bg); color: var(--alert-danger-text); }
+  #alert-banner.fatal    { animation: alert-pulse 1.4s ease-in-out infinite; }
+  @keyframes alert-pulse { 50% { border-color: var(--bad); } }
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <div>
+    <h1>FPGA 상태 대시보드</h1>
+    <div class="sub">
+      <span class="status-dot" id="conn-dot"></span><span id="conn-text">연결 중…</span>
+      <span id="dev-name"></span>
+    </div>
+  </div>
+  <button type="button" class="theme-toggle" id="theme-toggle" title="테마 전환 (자동 → 라이트 → 다크)">
+    <span class="tt-ico"></span><span class="tt-label"></span>
+  </button>
+</div>
+
+<div id="alert-banner">
+  <span class="ico"></span>
+  <div>
+    <div class="msg"></div>
+    <div class="detail"></div>
+  </div>
+</div>
+
+<div class="grid" id="summary-cards"></div>
+
+<div class="card" style="margin-bottom:12px;">
+  <p class="panel-title">FPGA 카드</p>
+  <div class="board-scene" id="board-scene">
+    <div class="board-rig" id="board-rig">
+      <div class="board-shadow"></div>
+    </div>
+  </div>
+  <div class="board-foot">
+    <div class="legend">
+      <span><i style="background:var(--good)"></i>정상 · 80°C 미만</span>
+      <span><i style="background:var(--warn)"></i>주의 · 80–96°C</span>
+      <span><i style="background:var(--bad)"></i>위험 · 97°C 이상</span>
+      <span style="color:var(--muted)">DS965 FPGA 한계 기준 · PCB 센서는 보드 한계 적용</span>
+    </div>
+    <span>드래그하여 회전 · 더블클릭 시 초기화</span>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="card">
+    <p class="panel-title">온도 (°C)</p>
+    <div class="chart-legend" id="tempChart-legend"></div>
+    <div class="chart-wrap">
+      <canvas id="tempChart"></canvas>
+      <div class="chart-tooltip" id="tempChart-tip"></div>
+    </div>
+  </div>
+  <div class="card">
+    <p class="panel-title">전력 (W)</p>
+    <div class="chart-wrap">
+      <canvas id="powerChart"></canvas>
+      <div class="chart-tooltip" id="powerChart-tip"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:12px;">
+  <p class="panel-title">전원 레일</p>
+  <table id="rail-table">
+    <thead><tr><th>Rail</th><th>Voltage (V)</th><th>Current (A)</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const HISTORY_LEN = 60;
+const tempHistory = {};
+const powerHistory = [];
+const timeHistory = [];
+const chartState = {};
+
+let lastData = null;
+
+function getVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/* ===================== theme ===================== */
+
+const THEME_KEY = 'fpga-dashboard-theme';
+const THEME_CYCLE = ['auto', 'light', 'dark'];
+const THEME_META = {
+  auto:  { ico: '◐', label: '자동' },
+  light: { ico: '☀', label: '라이트' },
+  dark:  { ico: '☾', label: '다크' },
+};
+const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
+let themePref = 'auto';
+
+function applyTheme() {
+  const dark = themePref === 'dark' || (themePref === 'auto' && darkMedia.matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+
+  const btn = document.getElementById('theme-toggle');
+  btn.querySelector('.tt-ico').textContent = THEME_META[themePref].ico;
+  btn.querySelector('.tt-label').textContent = THEME_META[themePref].label;
+
+  // Canvas and the inline-styled markers hold baked-in colors, so anything
+  // drawn from the token set has to be redrawn against the new palette.
+  if (lastData) {
+    renderSummary(lastData);
+    renderBoard(lastData.temperatures);
+  }
+  for (const [id, s] of Object.entries(chartState)) drawLineChart(id, s.series, s.opts);
+}
+
+function initTheme() {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    if (THEME_CYCLE.includes(stored)) themePref = stored;
+  } catch (e) { /* storage blocked — session-only preference */ }
+
+  document.getElementById('theme-toggle').addEventListener('click', () => {
+    themePref = THEME_CYCLE[(THEME_CYCLE.indexOf(themePref) + 1) % THEME_CYCLE.length];
+    try { localStorage.setItem(THEME_KEY, themePref); } catch (e) {}
+    applyTheme();
+  });
+  darkMedia.addEventListener('change', () => { if (themePref === 'auto') applyTheme(); });
+
+  applyTheme();
+}
+
+// Levels come from the backend, which derives them from the DS965 limits.
+// The fallback bands only matter against a backend that predates them.
+const LEVEL_COLOR_VAR = {
+  ok: '--good', caution: '--warn', warning: '--warn',
+  critical: '--bad', fatal: '--bad',
+};
+
+function tempLevel(t) {
+  if (t.level) return t.level;
+  if (t.celsius >= 97) return 'critical';
+  if (t.celsius >= 88) return 'warning';
+  if (t.celsius >= 80) return 'caution';
+  return 'ok';
+}
+
+function tempColor(t) {
+  return getVar(LEVEL_COLOR_VAR[tempLevel(t)] || '--good');
+}
+
+/* ===================== 3D board ===================== */
+
+const CARD_W = 470, CARD_H = 195;
+const PCB_Z0 = 0,  PCB_Z1 = 7;        // PCB slab
+const HS_X = 62,   HS_W = CARD_W - HS_X - 8;
+const HS_Z1 = 15;                      // heatsink base plate top
+const FIN_Z1 = 38;                     // fin tips
+const FIN_COUNT = 26;
+
+// Sensor placement on the card, as a fraction of its footprint.
+// On the U50 the HBM stacks sit in the same package as the FPGA die.
+// `lift` staggers the callout heights so neighbouring pills never collide.
+const SENSOR_LAYOUT = {
+  pcb_top_front: { x: 0.20, y: 0.12, label: 'PCB Front', lift: 78 },
+  int_vcc:       { x: 0.31, y: 0.70, label: 'Int Vcc',   lift: 30 },
+  fpga0:         { x: 0.52, y: 0.38, label: 'FPGA',      lift: 60 },
+  fpga_hbm:      { x: 0.65, y: 0.74, label: 'HBM',       lift: 24 },
+  pcb_top_rear:  { x: 0.91, y: 0.24, label: 'PCB Rear',  lift: 88 },
+};
+
+function face(css, style) {
+  const f = document.createElement('div');
+  f.className = 'f3d';
+  f.style.cssText = css + ';' + (style || '');
+  return f;
+}
+
+// Builds an axis-aligned box from 6 faces. z0/z1 are heights above the rig plane.
+function makeBox({ x, y, w, h, z0, z1, top, side, bottom }) {
+  const box = document.createElement('div');
+  box.className = 'box3d';
+  box.style.cssText = `left:${x}px;top:${y}px;width:${w}px;height:${h}px`;
+  const d = z1 - z0;
+  const sideStyle = side || top;
+  box.append(
+    face(`left:0;top:0;width:${w}px;height:${h}px;transform:translateZ(${z1}px)`, top),
+    face(`left:0;top:0;width:${w}px;height:${h}px;transform:translateZ(${z0}px)`, bottom || sideStyle),
+    face(`left:0;top:0;width:${w}px;height:${d}px;transform-origin:top;transform:translateZ(${z0}px) rotateX(90deg)`, sideStyle),
+    face(`left:0;top:${h}px;width:${w}px;height:${d}px;transform-origin:top;transform:translateZ(${z0}px) rotateX(90deg)`, sideStyle),
+    face(`left:0;top:0;width:${d}px;height:${h}px;transform-origin:left;transform:translateZ(${z0}px) rotateY(-90deg)`, sideStyle),
+    face(`left:${w}px;top:0;width:${d}px;height:${h}px;transform-origin:left;transform:translateZ(${z0}px) rotateY(-90deg)`, sideStyle),
+  );
+  return box;
+}
+
+function buildBoard() {
+  const rig = document.getElementById('board-rig');
+
+  // --- PCB slab (dark green, mostly hidden under the heatsink) ---
+  rig.append(makeBox({
+    x: 0, y: 0, w: CARD_W, h: CARD_H, z0: PCB_Z0, z1: PCB_Z1,
+    top: `background:
+            repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 14px),
+            linear-gradient(165deg, #14503a, #0e3b2a 60%, #0a2d20);
+          border-radius:3px`,
+    side: 'background:linear-gradient(#0c3324,#071e15)',
+    bottom: 'background:#071c14',
+  }));
+
+  // --- Heatsink base plate ---
+  rig.append(makeBox({
+    x: HS_X, y: 6, w: HS_W, h: CARD_H - 12, z0: PCB_Z1, z1: HS_Z1,
+    top: 'background:linear-gradient(160deg,#3d434a,#2e343a)',
+    side: 'background:linear-gradient(#33393f,#1e2328)',
+  }));
+
+  // --- Fins: real standing plates, running along the airflow axis ---
+  const finZone0 = 10, finZone1 = CARD_H - 10;
+  const pitch = (finZone1 - finZone0) / FIN_COUNT;
+  const thick = pitch * 0.42;
+  const finFrag = document.createDocumentFragment();
+  for (let i = 0; i < FIN_COUNT; i++) {
+    const y = finZone0 + i * pitch;
+    const box = document.createElement('div');
+    box.className = 'box3d';
+    box.style.cssText = `left:${HS_X + 4}px;top:${y}px;width:${HS_W - 8}px;height:${thick}px`;
+    const d = FIN_Z1 - HS_Z1;
+    box.append(
+      // machined top edge catches the light
+      face(`left:0;top:0;width:${HS_W - 8}px;height:${thick}px;transform:translateZ(${FIN_Z1}px)`,
+           'background:linear-gradient(90deg,#6f767e,#5b626a 60%,#4c535a)'),
+      // shadowed side
+      face(`left:0;top:0;width:${HS_W - 8}px;height:${d}px;transform-origin:top;transform:translateZ(${HS_Z1}px) rotateX(90deg)`,
+           'background:linear-gradient(#20252a,#171b1f)'),
+      // lit side
+      face(`left:0;top:${thick}px;width:${HS_W - 8}px;height:${d}px;transform-origin:top;transform:translateZ(${HS_Z1}px) rotateX(90deg)`,
+           'background:linear-gradient(#454c53,#2b3137)'),
+      // end cap
+      face(`left:${HS_W - 8}px;top:0;width:${d}px;height:${thick}px;transform-origin:left;transform:translateZ(${HS_Z1}px) rotateY(-90deg)`,
+           'background:#3a4046'),
+    );
+    finFrag.appendChild(box);
+  }
+  rig.appendChild(finFrag);
+
+  // --- PCI bracket: thin plate standing perpendicular at the I/O end.
+  // HHHL bracket is ~79mm along the card height and ~18mm across the slot. ---
+  const BR_Y0 = -16, BR_H = CARD_H + 32, BR_Z0 = -14, BR_Z1 = 30;
+  rig.append(makeBox({
+    x: -4, y: BR_Y0, w: 4, h: BR_H, z0: BR_Z0, z1: BR_Z1,
+    top: 'background:#22282e',
+    side: `background:
+             repeating-linear-gradient(0deg, transparent 0 14px, rgba(0,0,0,.55) 14px 20px),
+             linear-gradient(165deg,#454c53,#343a41 45%,#252b31)`,
+  }));
+
+  // --- QSFP28 cage in the bracket window ---
+  rig.append(makeBox({
+    x: 2, y: CARD_H * 0.30, w: 58, h: CARD_H * 0.40, z0: PCB_Z1, z1: 34,
+    top: `background:linear-gradient(160deg,#252c34,#1a2027)`,
+    side: 'background:linear-gradient(#2b323a,#171c22)',
+  }));
+  const port = face(
+    `left:6px;top:${CARD_H * 0.30 + 7}px;width:46px;height:${CARD_H * 0.40 - 14}px;transform:translateZ(35px);border-radius:2px`,
+    'background:#0a0d10;box-shadow:inset 0 2px 5px rgba(0,0,0,.9)'
+  );
+  rig.appendChild(port);
+  const qsfpLabel = face(
+    `left:6px;top:${CARD_H * 0.30 - 13}px;width:46px;height:12px;transform:translateZ(35px)`,
+    'font:600 8px system-ui;color:#79828c;letter-spacing:.1em;text-align:center;line-height:12px'
+  );
+  qsfpLabel.textContent = 'QSFP28';
+  rig.appendChild(qsfpLabel);
+
+  // --- PCIe gold fingers on the bottom edge of the PCB ---
+  rig.appendChild(face(
+    `left:${CARD_W * 0.18}px;top:${CARD_H}px;width:${CARD_W * 0.66}px;height:13px;` +
+    `transform-origin:top;transform:translateZ(${PCB_Z0}px) rotateX(90deg) rotateX(180deg)`,
+    `background:repeating-linear-gradient(90deg,#d9b544 0 7px,#8a6d1f 7px 9px)`
+  ));
+
+  // --- Silkscreen branding on the heatsink ---
+  const brand = face(
+    `left:${HS_X + 18}px;top:14px;width:170px;height:26px;transform:translateZ(${FIN_Z1 + 0.5}px)`,
+    'font:700 14px system-ui;letter-spacing:.14em;color:#c3cad2;text-shadow:0 1px 2px rgba(0,0,0,.8)'
+  );
+  brand.innerHTML = 'ALVEO<span style="font-weight:400;color:#8b949e;letter-spacing:.08em"> U50</span>';
+  rig.appendChild(brand);
+
+  // --- Thermal markers ---
+  for (const [id, pos] of Object.entries(SENSOR_LAYOUT)) {
+    const onHeatsink = pos.x * CARD_W > HS_X;
+    const baseZ = onHeatsink ? FIN_Z1 : PCB_Z1;
+
+    const m = document.createElement('div');
+    m.className = 'tmark';
+    m.id = `tmark-${id}`;
+    m.style.cssText =
+      `left:${pos.x * CARD_W}px;top:${pos.y * CARD_H}px;transform:translateZ(${baseZ}px)`;
+
+    const glow = document.createElement('div');
+    glow.className = 'tmark-glow';
+    m.appendChild(glow);
+
+    // leader line from the mark up to its floating callout
+    const stem = document.createElement('div');
+    stem.className = 'tmark-stem';
+    stem.style.height = pos.lift + 'px';
+    stem.style.transformOrigin = 'top';
+    stem.style.transform = 'rotateX(90deg) rotateX(180deg)';
+    m.appendChild(stem);
+
+    const pill = document.createElement('div');
+    pill.className = 'tmark-pill';
+    pill.dataset.lift = pos.lift;
+    pill.innerHTML =
+      `<span class="tm-dot"></span><span class="tm-name">${pos.label}</span>` +
+      `<span class="tm-val">–</span>`;
+    m.appendChild(pill);
+
+    rig.appendChild(m);
+  }
+}
+
+function renderBoard(temperatures) {
+  for (const t of temperatures) {
+    const m = document.getElementById(`tmark-${t.location}`);
+    if (!m) continue;
+    const color = tempColor(t);
+    m.querySelector('.tmark-glow').style.background =
+      `radial-gradient(circle, ${color} 0%, ${color}55 38%, transparent 70%)`;
+    const dot = m.querySelector('.tm-dot');
+    dot.style.background = color;
+    dot.style.boxShadow = `0 0 7px ${color}`;
+    m.querySelector('.tm-val').textContent = t.celsius.toFixed(0) + '°C';
+  }
+}
+
+const view = { rotX: 58, rotZ: -24 };
+
+function applyView() {
+  const rig = document.getElementById('board-rig');
+  rig.style.transform = `rotateX(${view.rotX}deg) rotateZ(${view.rotZ}deg)`;
+  // Billboard the labels: the inverse rig rotation keeps them facing the camera.
+  for (const pill of rig.querySelectorAll('.tmark-pill')) {
+    pill.style.transform =
+      `translateZ(${pill.dataset.lift}px) rotateZ(${-view.rotZ}deg) rotateX(${-view.rotX}deg)`;
+  }
+}
+
+function initBoardDrag() {
+  const rig = document.getElementById('board-rig');
+  let dragging = false, lastX = 0, lastY = 0;
+
+  const start = (x, y) => { dragging = true; lastX = x; lastY = y; rig.classList.add('dragging'); };
+  const move = (x, y) => {
+    if (!dragging) return;
+    view.rotZ += (x - lastX) * 0.35;
+    view.rotX = Math.max(8, Math.min(88, view.rotX - (y - lastY) * 0.35));
+    lastX = x; lastY = y;
+    applyView();
+  };
+  const end = () => { dragging = false; rig.classList.remove('dragging'); };
+
+  rig.addEventListener('mousedown', e => { e.preventDefault(); start(e.clientX, e.clientY); });
+  window.addEventListener('mousemove', e => move(e.clientX, e.clientY));
+  window.addEventListener('mouseup', end);
+  rig.addEventListener('touchstart', e => { const t = e.touches[0]; start(t.clientX, t.clientY); }, { passive: true });
+  window.addEventListener('touchmove', e => { const t = e.touches[0]; move(t.clientX, t.clientY); }, { passive: true });
+  window.addEventListener('touchend', end);
+  document.getElementById('board-scene').addEventListener('dblclick', () => {
+    view.rotX = 58; view.rotZ = -24; applyView();
+  });
+}
+
+/* ===================== summary cards ===================== */
+
+function colorForRatio(r) {
+  if (r < 0.6) return getVar('--good');
+  if (r < 0.85) return getVar('--warn');
+  return getVar('--bad');
+}
+
+function makeCard(label, value, unit, ratio, sub, colorOverride) {
+  const div = document.createElement('div');
+  div.className = 'card';
+  const color = colorOverride || colorForRatio(Math.max(0, Math.min(1, ratio)));
+  div.innerHTML = `
+    <div class="label">${label}</div>
+    <div class="value">${value}<span class="unit">${unit}</span></div>
+    <div class="bar-bg"><div class="bar-fill" style="width:${Math.min(100, ratio * 100)}%; background:${color}"></div></div>
+    ${sub ? `<div class="sub" style="margin:8px 0 0;">${sub}</div>` : ''}
+  `;
+  return div;
+}
+
+function renderSummary(data) {
+  const container = document.getElementById('summary-cards');
+  container.innerHTML = '';
+  const powerRatio = data.power_max_watts ? data.power_watts / data.power_max_watts : 0;
+  container.appendChild(makeCard(
+    '전력', data.power_watts.toFixed(1), 'W', powerRatio, `최대 ${data.power_max_watts} W`
+  ));
+  for (const t of data.temperatures) {
+    // Scale the bar against the shutdown limit so "full" means the card cuts power.
+    const fatal = (t.limits && t.limits.fatal) || 107;
+    const warn = (t.limits && t.limits.warning) || 88;
+    const level = tempLevel(t);
+    container.appendChild(makeCard(
+      t.description, t.celsius.toFixed(0), '°C', t.celsius / fatal,
+      level === 'ok' ? `경고 한계 ${warn.toFixed(0)}°C` : `한계까지 ${(warn - t.celsius).toFixed(0)}°C`,
+      tempColor(t)
+    ));
+  }
+}
+
+const ALERT_ICON = { caution: '▲', warning: '▲', critical: '■', fatal: '■' };
+
+function renderAlert(alert) {
+  const el = document.getElementById('alert-banner');
+  const level = (alert && alert.level) || 'ok';
+
+  if (level === 'ok') {
+    el.className = '';
+    document.title = 'FPGA Monitor';
+    return;
+  }
+  el.className = 'show ' + level;
+  el.querySelector('.ico').textContent = ALERT_ICON[level] || '▲';
+  el.querySelector('.msg').textContent = alert.message || '온도 임계값 초과';
+  el.querySelector('.detail').textContent = (alert.sensors || [])
+    .map(s => `${s.description} ${s.celsius.toFixed(0)}°C`).join(' · ');
+  // Surfaced in the tab strip too — a throttling run is usually noticed late
+  // precisely because the dashboard is sitting in a background tab.
+  document.title = `[${level.toUpperCase()}] FPGA ${(alert.sensors || [])
+    .map(s => s.celsius.toFixed(0) + '°C').join('/')}`;
+}
+
+function renderRailTable(rails) {
+  document.querySelector('#rail-table tbody').innerHTML = rails.map(r => `
+    <tr><td>${r.description}</td><td>${r.volts.toFixed(3)}</td><td>${r.amps.toFixed(3)}</td></tr>
+  `).join('');
+}
+
+/* ===================== charts ===================== */
+
+const CHART_COLOR_VARS = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5'];
+
+function seriesColor(series, name) {
+  const idx = Object.keys(series).indexOf(name);
+  return getVar(CHART_COLOR_VARS[idx % CHART_COLOR_VARS.length]);
+}
+
+const CHART_MARGIN = { top: 12, right: 46, bottom: 20, left: 34 };
+
+function niceStep(range, targetSteps = 4) {
+  const rough = range / targetSteps || 1;
+  const mag = 10 ** Math.floor(Math.log10(rough));
+  const norm = rough / mag;
+  return (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+}
+
+function formatClock(ts) {
+  return new Date(ts * 1000).toLocaleTimeString('ko-KR', { hour12: false });
+}
+
+function pushHistory(arr, val) {
+  arr.push(val);
+  if (arr.length > HISTORY_LEN) arr.shift();
+}
+
+function renderLegend(canvasId, series) {
+  const el = document.getElementById(`${canvasId}-legend`);
+  if (!el) return; // single-series charts render no legend box
+  el.innerHTML = Object.keys(series).map(name =>
+    `<span><i style="background:${seriesColor(series, name)}"></i>${name}</span>`
+  ).join('');
+}
+
+function drawLineChart(canvasId, series, opts, hoverIndex = null) {
+  chartState[canvasId] = { series, opts };
+  renderLegend(canvasId, series);
+
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const allVals = Object.values(series).flat();
+  if (allVals.length === 0) return;
+
+  const m = CHART_MARGIN;
+  const plotW = w - m.left - m.right;
+  const plotH = h - m.top - m.bottom;
+
+  const dataMin = opts.min ?? Math.min(...allVals);
+  const dataMax = opts.max ?? Math.max(...allVals);
+  const step = niceStep((dataMax - dataMin) || 1);
+  const niceMin = opts.min !== undefined ? opts.min : Math.floor(dataMin / step) * step;
+  const niceMax = opts.max !== undefined ? opts.max : Math.ceil(dataMax / step) * step;
+  const range = (niceMax - niceMin) || 1;
+
+  const xAt = i => m.left + (i / (HISTORY_LEN - 1)) * plotW;
+  const yAt = v => m.top + plotH - ((v - niceMin) / range) * plotH;
+
+  const gridColor = getVar('--grid');
+  const mutedColor = getVar('--muted');
+  const surfaceColor = getVar('--panel');
+  const textColor = getVar('--text');
+
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  ctx.fillStyle = mutedColor;
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const tickCount = Math.round(range / step);
+  for (let i = 0; i <= tickCount; i++) {
+    const val = niceMin + i * step;
+    const y = Math.round(yAt(val)) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(m.left, y);
+    ctx.lineTo(w - m.right, y);
+    ctx.stroke();
+    ctx.fillText(Number.isInteger(step) ? val.toFixed(0) : val.toFixed(1), m.left - 8, y);
+  }
+
+  const n = Math.max(0, ...Object.values(series).map(v => v.length));
+  if (n > 0 && timeHistory.length > 0) {
+    ctx.fillStyle = mutedColor;
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    ctx.fillText(formatClock(timeHistory[timeHistory.length - n]), m.left, h - 4);
+    ctx.textAlign = 'right';
+    ctx.fillText('지금', w - m.right, h - 4);
+  }
+
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  const endLabels = [];
+  for (const [name, vals] of Object.entries(series)) {
+    const color = seriesColor(series, name);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    vals.forEach((v, i) => {
+      const x = xAt(i), y = yAt(v);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    const lastV = vals[vals.length - 1];
+    if (lastV === undefined) continue;
+    const x = xAt(vals.length - 1), y = yAt(lastV);
+    ctx.fillStyle = surfaceColor; // 2px surface ring keeps the marker legible
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
+    endLabels.push({ x, y, text: lastV.toFixed(1) });
+  }
+
+  // Direct end-labels, but never stacked: where series converge the colliding
+  // label is dropped rather than nudged — the legend and tooltip still carry it.
+  ctx.fillStyle = textColor; // labels wear text ink, never the series color
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  const placed = [];
+  for (const lbl of endLabels.sort((a, b) => a.y - b.y)) {
+    if (placed.some(y => Math.abs(y - lbl.y) < 12)) continue;
+    placed.push(lbl.y);
+    ctx.fillText(lbl.text, Math.min(lbl.x + 8, w - m.right + 4), lbl.y);
+  }
+
+  if (hoverIndex !== null) {
+    const x = xAt(hoverIndex);
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, m.top);
+    ctx.lineTo(x, m.top + plotH);
+    ctx.stroke();
+    for (const [name, vals] of Object.entries(series)) {
+      const v = vals[hoverIndex];
+      if (v === undefined) continue;
+      const y = yAt(v);
+      ctx.fillStyle = surfaceColor;
+      ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = seriesColor(series, name);
+      ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+}
+
+function setupChartHover(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  const tip = document.getElementById(`${canvasId}-tip`);
+  const m = CHART_MARGIN;
+
+  canvas.addEventListener('mousemove', e => {
+    const state = chartState[canvasId];
+    if (!state) return;
+    const rect = canvas.getBoundingClientRect();
+    const plotW = rect.width - m.left - m.right;
+    const x = e.clientX - rect.left;
+    const idx = Math.round(((x - m.left) / plotW) * (HISTORY_LEN - 1));
+    const maxIdx = Math.max(0, ...Object.values(state.series).map(v => v.length - 1));
+    const clamped = Math.max(0, Math.min(maxIdx, idx));
+
+    drawLineChart(canvasId, state.series, state.opts, clamped);
+
+    const ts = timeHistory[timeHistory.length - 1 - (maxIdx - clamped)];
+    let html = ts ? `<div class="tip-time">${formatClock(ts)}</div>` : '';
+    for (const [name, vals] of Object.entries(state.series)) {
+      const v = vals[clamped];
+      if (v === undefined) continue;
+      html += `<div class="tip-row"><span class="tip-dot" style="background:${seriesColor(state.series, name)}"></span>${name}: <strong>${v.toFixed(1)}</strong></div>`;
+    }
+    tip.innerHTML = html;
+    tip.classList.add('visible');
+    tip.style.left = `${x}px`;
+    const tipRect = tip.getBoundingClientRect();
+    if (x + tipRect.width / 2 > rect.width) tip.style.left = `${rect.width - tipRect.width / 2}px`;
+    if (x - tipRect.width / 2 < 0) tip.style.left = `${tipRect.width / 2}px`;
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    const state = chartState[canvasId];
+    tip.classList.remove('visible');
+    if (state) drawLineChart(canvasId, state.series, state.opts, null);
+  });
+}
+
+/* ===================== connection ===================== */
+
+function connect() {
+  fetch('/api/devices').then(r => r.json()).then(({ devices }) => {
+    if (!devices.length) {
+      document.getElementById('conn-text').textContent = '장치를 찾을 수 없습니다';
+      return;
+    }
+    // Tolerate the older API shape (a bare BDF string) so the page still works
+    // against a backend that hasn't been restarted yet.
+    const dev = typeof devices[0] === 'string' ? { bdf: devices[0] } : devices[0];
+    if (dev.name) document.getElementById('dev-name').textContent = ' · ' + dev.name;
+    openSocket(dev.bdf);
+  });
+}
+
+function openSocket(bdf) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/${bdf}`);
+
+  ws.onopen = () => {
+    document.getElementById('conn-dot').className = 'status-dot up';
+    document.getElementById('conn-text').textContent = '연결됨';
+  };
+  ws.onclose = () => {
+    document.getElementById('conn-dot').className = 'status-dot down';
+    document.getElementById('conn-text').textContent = '연결 끊김 — 재연결 중…';
+    setTimeout(() => openSocket(bdf), 2000);
+  };
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = ev => {
+    const data = JSON.parse(ev.data);
+    if (data.error) {
+      document.getElementById('conn-text').textContent = '오류: ' + data.error;
+      return;
+    }
+    lastData = data;
+    renderAlert(data.alert);
+    renderSummary(data);
+    renderBoard(data.temperatures);
+    renderRailTable(data.power_rails);
+
+    pushHistory(powerHistory, data.power_watts);
+    pushHistory(timeHistory, data.timestamp);
+    for (const t of data.temperatures) {
+      if (!tempHistory[t.description]) tempHistory[t.description] = [];
+      pushHistory(tempHistory[t.description], t.celsius);
+    }
+
+    drawLineChart('tempChart', tempHistory, {});
+    drawLineChart('powerChart', { 'Power': powerHistory },
+                  { min: 0, max: data.power_max_watts || undefined });
+  };
+}
+
+initTheme();
+buildBoard();
+applyView();
+initBoardDrag();
+setupChartHover('tempChart');
+setupChartHover('powerChart');
+connect();
+window.addEventListener('resize', () => {
+  for (const [id, s] of Object.entries(chartState)) drawLineChart(id, s.series, s.opts);
+});
+</script>
+</body>
+</html>
