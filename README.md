@@ -15,10 +15,18 @@ FPGA 가속기의 상태를 웹 브라우저에서 실시간으로 확인하기 
 - 온도 경고 단계 변경 이력을 애플리케이션 로그에 기록
 
 ## 대시보드 화면
+
+### 장치 상태 및 FPGA 카드
+
 <p align="center">
-  <img src="docs/images/dashboard-overview.png" alt="ISC Monitoring Dashboard 화면" width="100%">
+  <img src="docs/images/dashboard-overview1.png" alt="FPGA 장치 상태 및 센서 위치 화면" width="100%">
 </p>
 
+### 온도·전력 차트 및 전원 레일
+
+<p align="center">
+  <img src="docs/images/dashboard-overview2.png" alt="FPGA 온도 및 전력 차트와 전원 레일 화면" width="100%">
+</p>
 
 ## 시스템 구성
 
