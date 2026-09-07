@@ -22,6 +22,9 @@ env/
 *.log
 xrt_report_*.json
 
+# Local deployment configuration
+/fpga-dashboard.service
+
 # Local tooling state
 .omc/
 .claude/
