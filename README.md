@@ -15,10 +15,6 @@ FPGA 가속기의 상태를 웹 브라우저에서 실시간으로 확인하기 
 - 온도 경고 단계 변경 이력을 애플리케이션 로그에 기록
 
 ## 대시보드 화면
-
-> 대시보드 스크린샷을 `docs/images/dashboard-overview.png`에 추가한 뒤 아래 주석을 해제하세요.
-
-
 <p align="center">
   <img src="docs/images/dashboard-overview.png" alt="ISC Monitoring Dashboard 화면" width="100%">
 </p>
