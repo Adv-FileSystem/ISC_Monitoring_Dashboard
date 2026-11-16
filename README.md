@@ -117,4 +117,4 @@ http://localhost:8811
 
 ## 라이선스
 
-이 저장소는 [BSD 3-Clause License](LICENSE)로 배포됩니다.
+이 저장소는 [BSD-2-Clause Plus Patent License](LICENSE) (SPDX: `BSD-2-Clause-Patent`)로 배포됩니다.
